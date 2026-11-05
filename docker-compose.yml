@@ -1,0 +1,66 @@
+services:
+  # S3-хранилище
+  garage:
+    image: dxflrs/garage:${GARAGE_VERSION}
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    ports: ["3900:3900"]
+
+  # JupyterLab + Spark (local mode): здесь запускаются и джобы, и ноутбук
+  jupyter:
+    build:
+      context: .
+      dockerfile: spark/Dockerfile
+      args:
+        SPARK_VERSION: ${SPARK_VERSION}
+        SCALA_VERSION: ${SCALA_VERSION}
+        HADOOP_VERSION: ${HADOOP_VERSION}
+        AWS_SDK_BUNDLE_VERSION: ${AWS_SDK_BUNDLE_VERSION}
+    image: lab/spark:latest
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --ServerApp.token= --ServerApp.root_dir=/work
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+    volumes:
+      - ./jobs:/opt/jobs:ro
+      - ./notebooks:/work/notebooks
+      - ./report:/work/report
+      - ${DATASET_DIR}:/data:ro
+    ports: ["8888:8888", "4040:4040"]
+    depends_on: [garage]
+
+  # Оркестрация: DAG visits_elt = load → transform
+  airflow:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    image: lab/airflow:latest
+    command: >
+      bash -c "/opt/airflow-venv/bin/airflow db migrate &&
+               /opt/airflow-venv/bin/airflow users create -u admin -p admin -r Admin -f a -l a -e a@a 2>/dev/null;
+               /opt/airflow-venv/bin/airflow scheduler & exec /opt/airflow-venv/bin/airflow webserver -p 8090"
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/dags
+      AIRFLOW__WEBSERVER__SECRET_KEY: lab
+    volumes:
+      - ./jobs:/opt/jobs:ro
+      - ./dags:/opt/dags:ro
+      - ${DATASET_DIR}:/data:ro
+    ports: ["8090:8090"]
+    depends_on: [jupyter]
+
+volumes:
+  garage-meta: {}
+  garage-data: {}
